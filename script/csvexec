@@ -1,0 +1,1135 @@
+#!/usr/bin/perl
+use Modern::Perl qw(2018);
+use English qw(-no_match_vars);
+use Const::Fast;
+use Log::Log4perl qw( :easy );
+use Getopt::Long qw( GetOptionsFromArray :config pass_through no_auto_abbrev no_ignore_case_always bundling );
+use Module::Load;
+use Module::Load::Conditional qw( check_install can_load );
+use Text::CSV;
+use File::Spec;
+use File::Basename;
+use File::Find;
+use File::Path qw(make_path);
+use File::BOM qw( :all );
+use Cwd qw( abs_path );
+use Encode qw(decode encode);
+use File::BOM qw( :all );
+use Taint::Util;
+use Switch;
+
+# ==============================================================
+# Global Constants
+# ==============================================================
+const my $DOT_PATH  => q(.);
+const my $COMMA     => q(,);
+const my $AT_SIGN   => q(@);
+const my $EMPTY_STR => q();
+
+# ==============================================================
+# Global Options
+# ==============================================================
+our $VERSION = '0.0';
+my %opt;
+sub get_opt_ref { return \%opt; }
+
+# ==============================================================
+# Modulino Code
+# ==============================================================
+sub _running_as_app    { return !defined scalar caller 1; }
+sub _loaded_as_module  { return  defined scalar caller 1; }
+my $method = do {
+    if    ( _running_as_app )    { 'run' }
+    elsif ( _loaded_as_module )  { 'module_init' }
+    else                         { undef }
+}; # END $method #
+__PACKAGE__->$method(\%opt) if defined $method;
+
+# ==============================================================
+# Main
+# ==============================================================
+
+# --------------------------------------------------------------
+# module_init()
+#   Initializes the environment for using this code as a module
+#   For testing purposes only
+# --------------------------------------------------------------
+sub module_init {
+    my ($package, $opt_ref) = @_;
+    init_logger($opt_ref, 'csvexec_test');
+    my $logger = get_logger($opt_ref->{'logname'});
+    $logger->level($OFF);
+    return 1;
+} # END module_init #
+
+# --------------------------------------------------------------
+# run()
+#   Run this code as an application
+#   Get options, initialize, process, and finalize
+# --------------------------------------------------------------
+sub run {
+    my ($package, $opt_ref) = @_;
+    return unless $opt_ref;
+
+    # Initialize logging
+    init_logger($opt_ref, 'csvexec');
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # Get command-line options
+    $opt_ref->{'args'} = \@ARGV;
+    get_options($opt_ref) or return;
+
+    # Load parser (must be loaded before we can get more command-line options or print usage)
+    return unless load_parser($opt_ref) || $opt_ref->{'check'} || $opt_ref->{'help'};
+
+    # Setup hook functions
+    set_default_parser_hooks($opt_ref);
+    set_loaded_parser_hooks($opt_ref);
+
+    # Get command-line options for the parser
+    return unless call_hook_function($opt_ref,'get_options') || $opt_ref->{'check'} || $opt_ref->{'help'};
+
+    # Get output destination command-line option
+    $opt_ref->{'output'} = $opt_ref->{'args'}->[0];
+
+    # Print usage statement (including the parser's usage statement)
+    if ( $opt_ref->{'help'} ) {
+        print_usage($opt_ref);
+        return call_hook_function($opt_ref,'print_usage');
+    } # END if #
+
+    # Set input source options
+    set_input_options($opt_ref);
+
+    # Set output destination
+    set_output_options($opt_ref);
+
+    # Print the selected command-line options (including the parser's options)
+    if ( $opt_ref->{'check'} ) {
+        print_options($opt_ref);
+        return call_hook_function($opt_ref,'print_options');
+    } # END if #
+
+    # Initialize
+    init($opt_ref) or return;
+    call_hook_function($opt_ref,'init') or return;
+
+    # Process input
+    if ( $opt_ref->{'dry-run'} ) { $logger->info('STARTING dry-run - No actions will be performed'); }
+    process_header($opt_ref);
+    process_data($opt_ref);
+    if ( $opt_ref->{'dry-run'} ) { $logger->info('COMPLETED dry-run - No actions should have been performed'); }
+
+    # Finalize
+    call_hook_function($opt_ref,'final');
+    final($opt_ref);
+
+    return 1;
+} # END run #
+
+# --------------------------------------------------------------
+# print_usage()
+#    Prints the usage statement
+# --------------------------------------------------------------
+sub print_usage {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    my $filename = $opt_ref->{'exec_filename'} || $PROGRAM_NAME;
+    return unless print <<"END_USAGE";
+Usage: $filename [options] <filepath>
+
+If input is a file, parses each line as CSV and passes
+  each set of parsed data to the given parser module.
+If input is a directory, recursively searches the directory and passes
+  each filename to the given parser module.
+Generates lines of CSV output based on data returned from the parser module.
+
+Options:
+    -h, --help               : Display this message and exit
+    -c, --check              : Display selected options and exit
+    -d, --dry-run            : Perform process without making any actual changes
+    -v, --verbose            : Display additional information during processing
+    -i, --input <filepath>   : Path, filename, or filepath for input source
+    -p, --parser <module>    : Name of the parser module to use
+    -a, --append             : Include both input and output columns in output
+    -t, --type <filetype>    : Type of file to search for
+    <filepath>               : Filename or filepath for output
+END_USAGE
+
+    return 1;
+} # END print_usage() #
+
+# --------------------------------------------------------------
+# print_options()
+#    Prints the selected options for processing
+# --------------------------------------------------------------
+sub print_options {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    my $input  = ( $opt_ref->{'in_filepath' } || '(stdin)'   );
+    my $output = ( $opt_ref->{'out_filepath'} || '(stdout)'  );
+    my $parser = ( $opt_ref->{'parser'      } || '(default)' );
+
+    my $append  = ( $opt_ref->{'append' } ? 'Yes' : 'No' );
+    my $dryrun  = ( $opt_ref->{'dry-run'} ? 'Yes' : 'No' );
+    my $verbose = ( $opt_ref->{'verbose'} ? 'Yes' : 'No' );
+
+    my $find_type = '(default)';
+    if ( $opt_ref->{'type'} eq 'f' ) { $find_type = 'Regular files'; }
+    if ( $opt_ref->{'type'} eq 'd' ) { $find_type = 'Directories'; }
+    if ( $opt_ref->{'type'} eq 'l' ) { $find_type = 'Symbolic links'; }
+    if ( $opt_ref->{'type'} eq 'b' ) { $find_type = 'Block special files'; }
+    if ( $opt_ref->{'type'} eq 'c' ) { $find_type = 'Character special files'; }
+
+    return unless print <<"END_OPTIONS";
+Options:
+        Input : $input
+       Output : $output
+       Parser : $parser
+       Append : $append
+      Dry-run : $dryrun
+      Verbose : $verbose
+         Type : $find_type
+END_OPTIONS
+
+    return 1;
+} # END print_options #
+
+# ==============================================================
+# Options
+# ==============================================================
+
+# --------------------------------------------------------------
+# init_logger()
+#   Initialize error logging
+# --------------------------------------------------------------
+sub init_logger {
+    my ($opt_ref, $logname) = @_;
+    return unless $opt_ref;
+    return unless $logname;
+
+    $opt_ref->{'logname'} = $logname;
+    Log::Log4perl->easy_init({
+        level => $ERROR,
+        file  => 'STDERR',
+        utf8  => 1,
+        category => $opt_ref->{'logname'},
+        layout => '%d{yyyy-MM-dd HH:mm:ss} (%F{1}) %p: %m%n',
+    });
+
+    return 1;
+} # END init_logger #
+
+# --------------------------------------------------------------
+# get_options()
+#   Reads command-line options and loads parser
+#   Prints usage statement and exits, if needed (--help)
+#   Prints selected options and exits, if needed (--check)
+# --------------------------------------------------------------
+sub get_options {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'args'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # Command-line parameters
+    GetOptionsFromArray($opt_ref->{'args'}, $opt_ref,
+        'help|h',
+        'check|c',
+        'verbose|v',
+        'dry-run|d',
+        'input|i=s',
+        'parser|p=s',
+        'type|t=s',
+        'append|a',
+    );
+
+    # Reset logging level, if needed (before calling any more functions)
+    $logger->level($INFO) if $opt_ref->{'verbose'};
+
+    # Set defaults
+    $opt_ref->{'type'} ||= 'f';
+    $opt_ref->{'type'} = lc substr $opt_ref->{'type'},0,1;
+
+    return 1;
+} # END get_options() #
+
+# --------------------------------------------------------------
+# set_input_options()
+#    Parses input filepath and sets input filepath options
+#    Returns 1 upon success, undef on failure
+# --------------------------------------------------------------
+sub set_input_options {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    my $input;
+    if ( $opt_ref->{'input'} ) {
+
+        # Convert to absolute filepath
+        my ( $in_volume, $in_path, $in_filename ) = File::Spec->splitpath($opt_ref->{'input'}, -d $opt_ref->{'input'});
+        $in_path ||= $DOT_PATH;
+        $in_path = abs_path($in_path);
+        my $in_filepath = File::Spec->catpath($in_volume, $in_path, $in_filename);
+
+        # Input is directory (find/wanted)
+        if ( -d $in_filepath ) {
+            $opt_ref->{'in_volume'}   = $in_volume;
+            $opt_ref->{'in_path'}     = $in_filepath;
+            $opt_ref->{'in_filename'} = undef;
+            $opt_ref->{'in_filepath'} = $in_filepath;
+            $opt_ref->{'in_src'} = 'find';
+            $logger->debug(sprintf 'FOUND directory (%s)',$in_filepath );
+
+         # Input is regular file (csv/parser)
+        } elsif ( -f $in_filepath ) {
+            $opt_ref->{'in_volume'}   = $in_volume;
+            $opt_ref->{'in_path'}     = $in_path;
+            $opt_ref->{'in_filename'} = $in_filename;
+            $opt_ref->{'in_filepath'} = $in_filepath;
+            $opt_ref->{'in_src'} = 'file';
+            $logger->debug(sprintf 'FOUND regular file (%s)',$in_filepath );
+
+         } # END if #
+
+    } # END if #
+
+    unless ( $opt_ref->{'in_src'} ) {
+        $opt_ref->{'in_src'} = 'stdin';
+        $logger->debug('Defaulting to STDIN');
+    } # END unless #
+
+    return 1;
+} # END set_input_options #
+
+# --------------------------------------------------------------
+# set_output_options()
+#    Parses output filepath and sets output filepath options
+#    Returns 1 upon success, undef on failure
+# --------------------------------------------------------------
+sub set_output_options {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    my $output;
+    if ( $opt_ref->{'output'} ) {
+
+        # Convert to absolute path
+        my ($out_volume, $out_path, $out_filename) = File::Spec->splitpath($opt_ref->{'output'});
+        $out_path = $DOT_PATH unless $out_path;
+        $out_path = abs_path($out_path);
+
+        # Validate output path
+        if ( -d $out_path ) {
+            untaint $out_volume;
+            untaint $out_path;
+        } else {
+            $logger->error(sprintf 'Output path does not exist (%s)',$out_path);
+            return;
+        } # END if #
+
+        # Validate output filename
+        if ( $out_filename =~ m/^[-.\w]+$/xmsu ) {
+            untaint $out_filename;
+        } else {
+            $logger->error(sprintf 'Invalid output filename (%s)',$out_filename);
+            return;
+        } # END if #
+
+        my $out_filepath = File::Spec->catpath($out_volume, $out_path, $out_filename);
+
+        # Assume that output will be regular file
+        $opt_ref->{'out_volume'}   = $out_volume;
+        $opt_ref->{'out_path'}     = $out_path;
+        $opt_ref->{'out_filename'} = $out_filename;
+        $opt_ref->{'out_filepath'} = $out_filepath;
+        $opt_ref->{'out_dst'}      = 'file';
+        $logger->debug(sprintf 'Set output file (%s)',$out_filepath);
+
+        if ( -e $out_filepath ) {
+            if ( -f $out_filepath ) {
+                $logger->warn(sprintf 'Output file exists and will be overwritten (%s)',$out_filepath);
+            } else {
+                $logger->warn(sprintf 'Output destination exists and cannot be overwritten (%s)',$out_filepath);
+                $opt_ref->{'out_volume'}   = undef;
+                $opt_ref->{'out_path'}     = undef;
+                $opt_ref->{'out_filename'} = undef;
+                $opt_ref->{'out_filepath'} = undef;
+                $opt_ref->{'out_dst'} = undef;
+            } # END if #
+        } # END if #
+
+    } # END if #
+
+    unless ( $opt_ref->{'out_dst'} ) {
+        $opt_ref->{'out_dst'} = 'stdout';
+        $logger->debug('Defaulting to STDOUT');
+    } # END unless #
+
+    return 1;
+} # END set_output_options #
+
+# ==============================================================
+# Parser Handling
+# ==============================================================
+
+# --------------------------------------------------------------
+# load_parser()
+#   Loads and intializes the specified parser
+# --------------------------------------------------------------
+sub load_parser {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # If no parser was specified, return
+    return 1 unless $opt_ref->{'parser'};
+
+    # Generate a list of parser module names to search for
+    my @tests;
+    push @tests, $opt_ref->{'parser'};
+    push @tests, sprintf 'Local::%s',$opt_ref->{'parser'};
+    push @tests, sprintf 'main::%s',$opt_ref->{'parser'};
+    push @tests, sprintf 'Local::ParseFile::%s',$opt_ref->{'parser'}; # Old location
+
+    # Check if the specified parser is available
+    my $parser;
+    foreach my $test_parser ( @tests ) {
+        $logger->debug(sprintf 'Searching for parser: %s', $test_parser);
+        if ( check_install( 'module' => $test_parser ) ) {
+            $parser = $test_parser;
+        } # END if #
+    } # END foreach #
+
+    unless ( $parser ) {
+        $logger->error(sprintf 'Parser not found (%s)', $opt_ref->{'parser'});
+        return;
+    } # END unless #
+
+    $logger->debug(sprintf 'Found parser (%s)',$parser);
+    $opt_ref->{'parser'} = $parser;
+
+    # Load the parser
+    if ( can_load('modules' => { $opt_ref->{'parser'} => undef }) ) {
+        autoload($opt_ref->{'parser'});
+        $logger->debug(sprintf 'Parser loaded (%s)',$parser);
+    } # END if #
+
+    return 1;
+} # END load_parser() #
+
+# ==============================================================
+# Hook Functions
+# ==============================================================
+
+sub _default_get_options   { my ($opt_ref) = @_; return unless $opt_ref; return 1; }
+sub _default_print_usage   { my ($opt_ref) = @_; return unless $opt_ref; return 1; }
+sub _default_print_options { my ($opt_ref) = @_; return unless $opt_ref; return 1; }
+sub _default_init          { my ($opt_ref) = @_; return unless $opt_ref; return 1; }
+sub _default_final         { my ($opt_ref) = @_; return unless $opt_ref; return 1; }
+
+sub _default_header_row {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    @{$opt_ref->{'out_header'}} = map { $_ } @{$opt_ref->{'in_header'}};
+    return 1;
+} # END _default_header_row #
+
+sub _default_data_row {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    %{$opt_ref->{'out_data'}} = map { $_ => $opt_ref->{'in_data'}->{$_} } keys %{$opt_ref->{'in_data'}};
+    return 1;
+} # END _default_data_row #
+
+sub _default_wanted {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'src_filepath'};
+
+    return 1 if ( $opt_ref->{'type'} eq 'f' && -f $opt_ref->{'src_filepath'} );
+    return 1 if ( $opt_ref->{'type'} eq 'd' && -d $opt_ref->{'src_filepath'} );
+    return 1 if ( $opt_ref->{'type'} eq 'l' && -l $opt_ref->{'src_filepath'} );
+    return 1 if ( $opt_ref->{'type'} eq 'b' && -b $opt_ref->{'src_filepath'} );
+    return 1 if ( $opt_ref->{'type'} eq 'c' && -c $opt_ref->{'src_filepath'} );
+
+    return;
+} # END _default_wanted #
+
+# --------------------------------------------------------------
+# set_default_parser_hooks()
+#   Sets default hook functions
+# --------------------------------------------------------------
+sub set_default_parser_hooks {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    $opt_ref->{'parser_get_options'}   = \&_default_get_options;
+    $opt_ref->{'parser_print_usage'}   = \&_default_print_usage;
+    $opt_ref->{'parser_print_options'} = \&_default_print_options;
+    $opt_ref->{'parser_init'}          = \&_default_init;
+    $opt_ref->{'parser_final'}         = \&_default_final;
+    $opt_ref->{'parser_header_row'}    = \&_default_header_row;
+    $opt_ref->{'parser_data_row'}      = \&_default_data_row;
+    $opt_ref->{'parser_wanted'}        = \&_default_wanted;
+
+    return 1;
+} # END set_default_parser_hooks #
+
+# --------------------------------------------------------------
+# set_loaded_parser_hooks()
+#     Overrides the default hook functions with parser-supplied
+#     functions, if they exist
+# --------------------------------------------------------------
+sub set_loaded_parser_hooks {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    $opt_ref->{'parser_print_usage'}   = \&parser_print_usage   if defined &parser_print_usage;
+    $opt_ref->{'parser_get_options'}   = \&parser_get_options   if defined &parser_get_options;
+    $opt_ref->{'parser_print_options'} = \&parser_print_options if defined &parser_print_options;
+    $opt_ref->{'parser_init'}          = \&parser_init          if defined &parser_init;
+    $opt_ref->{'parser_final'}         = \&parser_final         if defined &parser_final;
+    $opt_ref->{'parser_wanted'}        = \&parser_wanted        if defined &parser_wanted;
+    $opt_ref->{'parser_header_row'}    = \&parser_header_row    if defined &parser_header_row;
+    $opt_ref->{'parser_data_row'}      = \&parser_data_row      if defined &parser_data_row;
+
+    return 1;
+} # END set_loaded_parser_hooks #
+
+# --------------------------------------------------------------
+# call_hook_function()
+#   Call the specified default or loaded hook function
+# --------------------------------------------------------------
+sub call_hook_function {
+    my ($opt_ref,$hook_name) = @_;
+    return unless $opt_ref;
+    return unless $hook_name;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    my $func_name = sprintf 'parser_%s',(lc $hook_name);
+    return unless $opt_ref->{$func_name};
+
+    $logger->debug(sprintf 'CALLING %s() hook function',$func_name);
+    $opt_ref->{$func_name}->($opt_ref) or return;
+    $logger->debug(sprintf 'FINISHED %s() hook function',$func_name);
+
+    return 1;
+} # END call_hook_function #
+
+# ==============================================================
+# Initialize / Finalize
+# ==============================================================
+
+# --------------------------------------------------------------
+# init()
+#    Initializes the input file handle
+#    Initializes the output file handle
+# --------------------------------------------------------------
+sub init {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $result = 1;
+
+    # Initialize the input source
+    switch ( $opt_ref->{'in_src'} ) {
+        case 'find'  { $result &&= 1; }
+        case 'file'  { $result &&= ( acquire_in_csv($opt_ref) && open_input_file($opt_ref) ); }
+        case 'stdin' { $result &&= ( acquire_in_csv($opt_ref) && open_stdin($opt_ref) ); }
+        else { return; }
+    } # END switch #
+
+    # Initialize the output destination
+    switch ( $opt_ref->{'out_dst'} ) {
+        case 'file'   { $result &&= ( acquire_out_csv($opt_ref) && open_output_file($opt_ref) ); }
+        case 'stdout' { $result &&= ( acquire_out_csv($opt_ref) && open_stdout($opt_ref) ); }
+        else { return; }
+    } # END switch #
+
+    # Initialize row numbers
+    #  in_row  = input row being processed (increment when row is read)
+    #  out_row = output row being processed (increment when row is written)
+    $opt_ref->{'in_row'} = 0;
+    $opt_ref->{'out_row'} = 1;
+
+    return $result;
+} # END init #
+
+# --------------------------------------------------------------
+# final()
+# --------------------------------------------------------------
+sub final {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $result = 1;
+
+    # Close/Finalize the ouput destination
+    switch ( $opt_ref->{'out_dst'} ) {
+        case 'file'   { $result &&= close_output_file($opt_ref); $result &&= release_out_csv($opt_ref); }
+        case 'stdout' { $result &&= close_stdout($opt_ref); $result &&= release_out_csv($opt_ref); }
+        elese         { $result = undef; }
+    } # END switch #
+    $opt_ref->{'out_dst'} = undef;
+
+    # Close/Finalize the input source
+    switch ( $opt_ref->{'in_src'} ) {
+        case 'find'  { $result &&= 1; }
+        case 'file'  { $result &&= close_input_file($opt_ref); $result &&= release_in_csv($opt_ref); }
+        case 'stdin' { $result &&= close_stdin($opt_ref); $result &&= release_in_csv($opt_ref); }
+        else         { $result = undef; }
+    } # END switch #
+    $opt_ref->{'in_src'} = undef;
+
+    return $result;
+} # END final 
+
+# --------------------------------------------------------------
+# acquire_in_csv()
+#    Initialize input CSV object
+# --------------------------------------------------------------
+sub acquire_in_csv {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+    $opt_ref->{'in_csv'} = Text::CSV->new( { binary => 1, auto_diag => 1 } )
+        or $logger->logdie(sprintf 'Cannot use Text::CSV for input (%s)', (join $COMMA,Text::CSV->error_diag()));
+    return 1;
+} # END acquire_in_csv #
+
+# --------------------------------------------------------------
+# release_in_csv()
+# --------------------------------------------------------------
+sub release_in_csv {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_csv'};
+    $opt_ref->{'in_csv'} = undef;
+    return 1;
+} # END release_in_csv #
+
+# --------------------------------------------------------------
+# acquire_out_csv()
+#    Initialize output CSV object
+# --------------------------------------------------------------
+sub acquire_out_csv {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+    $opt_ref->{'out_csv'} = Text::CSV->new( {eol => "\n", binary => 1, always_quote => 1} )
+	    or $logger->logdie(sprintf 'Cannot use Text::CSV for output (%s)', (join $COMMA,Text::CSV->error_diag()));
+    return 1;
+} # END acquire_out_csv #
+
+# --------------------------------------------------------------
+# release_out_csv()
+# --------------------------------------------------------------
+sub release_out_csv {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'out_csv'};
+    $opt_ref->{'out_csv'} = undef;
+    return 1;
+} # END release_out_csv #
+
+# --------------------------------------------------------------
+# open_input_file()
+#   Initialize the input source
+# --------------------------------------------------------------
+sub open_input_file {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_filepath'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # Initialize input file handle
+    $logger->debug(sprintf 'Opening input file: %s', $opt_ref->{'in_filepath'});
+
+    unless ( open $opt_ref->{'in_fh'}, '<', $opt_ref->{'in_filepath'} ) {
+        $logger->error(sprintf 'Unable to open input file (%s): %s', $opt_ref->{'in_filepath'},$ERRNO);
+        return;
+    } # END unless #
+
+    return 1;
+} # END open_input_file #
+
+# --------------------------------------------------------------
+# close_input_file()
+#   Closes the input CSV file
+# --------------------------------------------------------------
+sub close_input_file {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_fh'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Closing input file');
+    unless ( close $opt_ref->{'in_fh'} ) {
+        $logger->error(sprintf 'Unable to close input file: %s',$ERRNO);
+    } # END unless #
+    $opt_ref->{'in_fh'} = undef;
+
+    return 1;
+} # END close_input_file #
+
+# --------------------------------------------------------------
+# open_output_file()
+#   Initialize the output CSV file handle
+# --------------------------------------------------------------
+sub open_output_file {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'out_filepath'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug(sprintf 'Opening ouput file: %s', $opt_ref->{'out_filepath'});
+    unless ( open $opt_ref->{'out_fh'}, '>', $opt_ref->{'out_filepath'} ) {
+        $logger->error(sprintf 'Unable to open output file %s: %s',$opt_ref->{'out_filepath'},$ERRNO);
+        return;
+    } # END unless #
+
+    return 1;
+} # END open_output_file #
+
+# --------------------------------------------------------------
+# close_output_file()
+#   Closes the output CSV file
+# --------------------------------------------------------------
+sub close_output_file {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'out_fh'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Closing ouput file');
+    unless ( close $opt_ref->{'out_fh'} ) {
+        $logger->error(sprintf '%s: %s',$opt_ref->{'out_filepath'},$ERRNO);
+    } # END unless #
+    $opt_ref->{'out_fh'} = undef;
+
+    return 1;
+} # END close_output_file #
+
+# --------------------------------------------------------------
+# open_stdin()
+#    Initialize STDIN file handle for input
+# --------------------------------------------------------------
+sub open_stdin {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Opening STDIN');
+    $opt_ref->{'stdin'} = 1;
+    $opt_ref->{'in_fh'} = *STDIN;
+
+    return 1;
+} # END open_stdin #
+
+# --------------------------------------------------------------
+# close_stdin()
+# --------------------------------------------------------------
+sub close_stdin {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_fh'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Closing STDIN');
+    $opt_ref->{'in_fh'} = undef;
+    $opt_ref->{'stdin'} = undef;
+
+    return 1;
+} # END close_stdin #
+
+# --------------------------------------------------------------
+# open_stdout()
+#   Initialize STDOUT file handle for output
+# --------------------------------------------------------------
+sub open_stdout {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Opening STDOUT');
+    binmode STDOUT, ':utf8';
+    $opt_ref->{'stdout'} = 1;
+    $opt_ref->{'out_fh'} = *STDOUT;
+
+    return 1;
+} # END open_stdout #
+
+# --------------------------------------------------------------
+# close_stdout()
+# --------------------------------------------------------------
+sub close_stdout {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'out_fh'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('Closing STDOUT');
+    $opt_ref->{'out_fh'} = undef;
+    $opt_ref->{'stdout'} = undef;
+
+    return 1;
+} # END close_stdout #
+
+# ==============================================================
+# Main Processing
+# ==============================================================
+
+# --------------------------------------------------------------
+# process_header()
+# --------------------------------------------------------------
+sub process_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    # Read input header row from input source
+    if    ($opt_ref->{'in_src'} eq 'find' ) { process_find_header($opt_ref) or return; }
+    elsif ($opt_ref->{'in_src'} eq 'file' ) { process_csv_header($opt_ref)  or return; }
+    elsif ($opt_ref->{'in_src'} eq 'stdin') { process_csv_header($opt_ref)  or return; }
+    else                                    { return; }
+
+    return 1;
+} # END process_header #
+
+# --------------------------------------------------------------
+# process_data()
+#   Reads data row from input source
+#   Parses input to produce output data rows
+#   Writes the data rows to the output
+# --------------------------------------------------------------
+sub process_data {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    # Process input data row
+    if    ($opt_ref->{'in_src'} eq 'find' ) { process_find_data($opt_ref) or return; }
+    elsif ($opt_ref->{'in_src'} eq 'file' ) { process_csv_data($opt_ref)  or return; }
+    elsif ($opt_ref->{'in_src'} eq 'stdin') { process_csv_data($opt_ref)  or return; }
+    else                                    { return; }
+
+    return 1;
+} # END process_data #
+
+# ==============================================================
+# Find/Wanted Processing
+# ==============================================================
+
+# --------------------------------------------------------------
+# process_find_header()
+#   Reads input header for find/wanted processing
+#   Writes output header for find/wanted processing
+# --------------------------------------------------------------
+sub process_find_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    # Read input header row
+    read_find_header($opt_ref) or return;
+
+    # Parse input header and generate output header
+    call_hook_function($opt_ref,'header_row') or return;
+
+    # Write output header row
+    write_csv_header($opt_ref) or return;
+
+    return 1;
+} # END process_find_header #
+
+# --------------------------------------------------------------
+# read_find_header()
+#   Reads an input header row for find/wanted processing
+# --------------------------------------------------------------
+sub read_find_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    @{$opt_ref->{'in_header'}} = qw(
+        SRC_BASE_PATH
+        SRC_PATH
+        SRC_FILENAME
+        SRC_EXTENSION
+    );
+
+    # Copy input header to output header (default output)
+    @{$opt_ref->{'out_header'}} = map { $_ } @{$opt_ref->{'in_header'}};
+
+    return 1;
+} # END read_find_header #
+
+# --------------------------------------------------------------
+# process_find_data()
+#   Recursively reads 'in_path' for files
+#   Writes output CSV for each "wanted" file found
+# --------------------------------------------------------------
+sub process_find_data {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_path'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    $logger->debug('STARTING find search');
+    # Call wanted() for each filepath found
+    find( { wanted => \&process_find_data_row, follow => 1 }, $opt_ref->{'in_path'} );
+    $logger->debug('FINISHED find search');
+
+    return 1;
+} # END process_find_data #
+
+# --------------------------------------------------------------
+# process_find_data_row()
+#    Process a file which has been found
+# --------------------------------------------------------------
+sub process_find_data_row {
+    my $opt_ref = \%opt;
+
+    $opt_ref->{'src_path'    } = $File::Find::dir;
+    $opt_ref->{'src_filename'} = $_;
+    $opt_ref->{'src_filepath'} = $File::Find::name;
+    $opt_ref->{'in_data'     } = undef;
+
+    # Skip Synology index files/folders
+    return if 0 <= (index $opt_ref->{'src_filepath'},'@eaDir');
+    return if 0 <= (index $opt_ref->{'src_filepath'},'@SynoEAStream');
+
+    call_hook_function($opt_ref,'wanted') or return;
+
+    # Source path
+    my $src_base_path = $opt_ref->{'in_path'};
+    my $src_path      = File::Spec->abs2rel(abs_path($opt_ref->{'src_path'}), $src_base_path);
+       $src_path      = ($src_path eq $DOT_PATH ? undef : $src_path);
+    my $src_fullpath  = ($src_path ? File::Spec->catdir($src_base_path,$src_path) : $src_base_path);
+    $opt_ref->{'in_data'}->{'SRC_BASE_PATH'} = $src_base_path;
+    $opt_ref->{'in_data'}->{'SRC_PATH'     } = $src_path;
+    $opt_ref->{'in_data'}->{'SRC_FULLPATH' } = $src_fullpath;
+
+    # Source filepath
+    my $src_filename  = $opt_ref->{'src_filename'};
+    if ( $src_filename ) {
+        my $src_filepath  = File::Spec->catfile($src_fullpath,$src_filename);
+        my ($src_extension) = $src_filename =~ m/[.]([^.]+)$/xms;
+        $opt_ref->{'in_data'}->{'SRC_FILENAME' } = $src_filename;
+        $opt_ref->{'in_data'}->{'SRC_FILEPATH' } = $src_filepath;
+        $opt_ref->{'in_data'}->{'SRC_EXTENSION'} = uc $src_extension if $src_extension;
+    } # END if #
+
+    $opt_ref->{'in_row'} += 1;
+
+    # Produce output data row
+    process_csv_data_row($opt_ref) or return;
+
+    # Write output data row
+    write_csv_data_row($opt_ref) or return;
+
+    return 1;
+} # END process_find_data_row #
+
+# ==============================================================
+# CSV File Processing
+# ==============================================================
+
+# --------------------------------------------------------------
+# process_csv_header()
+#   Reads input header for CSV processing
+#   Writes output header for CSV processing
+# --------------------------------------------------------------
+sub process_csv_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    # Read input header row
+    read_csv_header($opt_ref) or return;
+
+    # Parse input header and generate output header
+    call_hook_function($opt_ref,'header_row') or return;
+
+    # Add input header fields to output header
+    if ( $opt_ref->{'append'} ) { combine_headers($opt_ref) or return; }
+
+    # Write output header row
+    write_csv_header($opt_ref) or return;
+
+    return 1;
+} # END process_csv_header #
+
+# --------------------------------------------------------------
+# read_csv_header()
+#   Reads an input header row from file or STDIN
+#   Detects Unicode BOM (byte-order mark) and sets CSV encoding
+# --------------------------------------------------------------
+sub read_csv_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_fh'};
+    return unless $opt_ref->{'in_csv'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # Read Byte-Order Mark (BOM), if any
+    ( $opt_ref->{'in_encoding'}, $opt_ref->{'in_spillage'} ) = defuse($opt_ref->{'in_fh'});
+
+    # Read Line
+    my $line = readline $opt_ref->{'in_fh'};
+    unless ( $line ) {
+        $logger->error('Unable to read CSV header');
+        return;
+    } # END unless #
+    $line = sprintf '%s%s',($opt_ref->{'in_spillage'} || $EMPTY_STR),$line;
+
+    # Parse line into fields
+    # TODO: Try different separators, like Text::CSV::header()
+    unless ( $opt_ref->{'in_csv'}->parse($line) ) {
+        $logger->error('Unable to parse CSV header');
+        return;
+    } # END unless #
+    # TODO: Convert fields to UTF-8
+    @{$opt_ref->{'in_header'}} = $opt_ref->{'in_csv'}->fields();
+    return unless scalar @{$opt_ref->{'in_header'}};
+
+    # Set CSV object column names for Text::CSV::getline_hr()
+    $opt_ref->{'in_csv'}->column_names($opt_ref->{'in_header'});
+
+    return 1;
+} # END read_csv_header #
+
+# --------------------------------------------------------------
+# combine_headers()
+#    Combines the input header with the generated output header
+# --------------------------------------------------------------
+sub combine_headers {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless ( $opt_ref->{'out_header'} || $opt_ref->{'in_header'} );
+
+    # Combine input and output header, if needed
+    my @new_header = @{$opt_ref->{'in_header'}};
+    foreach my $item ( @{$opt_ref->{'out_header'}} ) {
+        my $found = undef;
+        foreach ( @new_header ) { if ( $item eq $_ ) { $found = 1; break; } }
+        push @new_header, $item unless $found;
+    } # END foreach #
+    @{$opt_ref->{'out_header'}} = @new_header;
+
+    return 1;
+} # END combine_headers #
+
+# --------------------------------------------------------------
+# write_csv_header()
+#   Produces and prints an output header row
+# --------------------------------------------------------------
+sub write_csv_header {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'out_header'};
+    return unless $opt_ref->{'out_csv'};
+    return unless $opt_ref->{'out_fh'};
+
+    # Set output encoding
+    $opt_ref->{'out_encoding'} ||= 'UTF-8';
+    my $encoding = sprintf ':encoding(%s)',$opt_ref->{'out_encoding'};
+    binmode $opt_ref->{'out_fh'}, $encoding;
+
+    # Write Byte-Order Mark (BOM) for Unicode encoding
+    if ( $opt_ref->{'out_encoding'} =~ m/^UTF/xms ) {
+        return unless print { $opt_ref->{'out_fh'} } "\N{BOM}";
+    } # END if #
+
+    # Write output header row
+    $opt_ref->{'out_csv'}->print($opt_ref->{'out_fh'}, $opt_ref->{'out_header'});
+    $opt_ref->{'out_row'} += 1;
+
+    # If verbose, also send output header row to STDOUT
+    return 1 unless $opt_ref->{'verbose'};
+    return 1 if $opt_ref->{'out_dst'} eq 'stdout';
+    $opt_ref->{'out_csv'}->print(*STDOUT, $opt_ref->{'out_header'});
+
+    return 1;
+} # END write_csv_header #
+
+# ==============================================================
+# Data Rows
+# ==============================================================
+
+# --------------------------------------------------------------
+# process_csv_data()
+#   Read and parse each line of CSV from input
+# --------------------------------------------------------------
+sub process_csv_data {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_csv'};
+
+    while ( !$opt_ref->{'in_csv'}->eof() ) {
+        read_csv_data_row($opt_ref) or next;
+
+        process_csv_data_row($opt_ref) or next;
+
+        write_csv_data_row($opt_ref) or next;
+    } # END while #
+
+    return 1;
+} # END process_csv_data #
+
+# --------------------------------------------------------------
+# read_csv_data_row()
+#     Reads a single data row from the input CSV source
+# --------------------------------------------------------------
+sub read_csv_data_row {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return unless $opt_ref->{'in_fh'};
+    return unless $opt_ref->{'in_csv'};
+
+    my $in_data_ref = $opt_ref->{'in_csv'}->getline_hr($opt_ref->{'in_fh'});
+    return unless $in_data_ref;
+
+    $opt_ref->{'in_data'} = $in_data_ref;
+    $opt_ref->{'in_row'} += 1;
+
+    return 1;
+} # END read_csv_data_row #
+
+# --------------------------------------------------------------
+# process_csv_data_row()
+#   Copies input data to output data and calls hook function
+# --------------------------------------------------------------
+sub process_csv_data_row {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+
+    $opt_ref->{'out_data'} = undef;
+    foreach (keys %{$opt_ref->{'in_data'}}) { $opt_ref->{'out_data'}->{$_} = $opt_ref->{'in_data'}->{$_}; }
+
+    call_hook_function($opt_ref,'data_row') or return;
+
+    return 1;
+} # END process_csv_data_row #
+
+# --------------------------------------------------------------
+# write_csv_data_row()
+#   Writes a single data row to the output
+# --------------------------------------------------------------
+sub write_csv_data_row {
+    my ($opt_ref) = @_;
+    return unless $opt_ref;
+    return 1 unless $opt_ref->{'out_data'};
+
+    # Write Output Data Row
+    my @out_data = map { $opt_ref->{'out_data'}->{$_} } @{$opt_ref->{'out_header'}};
+    $opt_ref->{'out_csv'}->print($opt_ref->{'out_fh'}, \@out_data);
+    $opt_ref->{'out_row'} += 1;
+
+    # If verbose, also send output data row to STDOUT
+    return 1 unless $opt{'verbose'};
+    return 1 if $opt_ref->{'out_dst'} eq 'stdout';
+    $opt_ref->{'out_csv'}->print(*STDOUT, \@out_data);
+
+    return 1;
+} # END write_csv_data_row #
+
+1;
