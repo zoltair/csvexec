@@ -17,10 +17,12 @@ use Encode qw(decode encode);
 use File::BOM qw( :all );
 use Taint::Util;
 use Switch;
+use List::Util qw( first );
 
 # ==============================================================
 # Global Constants
 # ==============================================================
+const my $FILENAME_CHAR => qr{[^\\/:"*?<>|\p{Other}]}xms;
 const my $COMMA     => q{,};
 const my $EMPTY_STR => q{};
 
@@ -331,7 +333,7 @@ sub set_output_options {
         } # END if #
 
         # Validate output filename
-        if ( $out_filename =~ m/^[-.\w]+$/xmsu ) {
+        if ( $out_filename =~ m{\A $FILENAME_CHAR+ \z}xms ) {
             untaint $out_filename;
         } else {
             $logger->error(sprintf 'Invalid output filename (%s)',$out_filename);
@@ -911,7 +913,7 @@ sub process_find_data_row {
     my $src_filename  = $opt_ref->{'src_filename'};
     if ( $src_filename ) {
         my $src_filepath  = File::Spec->catfile($src_fullpath,$src_filename);
-        my ($src_extension) = $src_filename =~ m/[.]([^.]+)$/xms;
+        my ($src_extension) = $src_filename =~ m{[.]($FILENAME_CHAR+?)\z}xms;
         $opt_ref->{'in_data'}->{'SRC_FILENAME' } = $src_filename;
         $opt_ref->{'in_data'}->{'SRC_FILEPATH' } = $src_filepath;
         $opt_ref->{'in_data'}->{'SRC_EXTENSION'} = uc $src_extension if $src_extension;
@@ -1028,12 +1030,13 @@ sub write_csv_header {
     return unless $opt_ref->{'out_fh'};
 
     # Set output encoding
-    $opt_ref->{'out_encoding'} ||= 'UTF-8';
+    $opt_ref->{'out_encoding'} = 'UTF-8' if !defined $opt_ref->{'out_encoding'};
     my $encoding = sprintf ':encoding(%s)',$opt_ref->{'out_encoding'};
     binmode $opt_ref->{'out_fh'}, $encoding;
 
     # Write Byte-Order Mark (BOM) for Unicode encoding
-    if ( $opt_ref->{'out_encoding'} =~ m/^UTF/xms ) {
+    my @encodings = qw(UTF-8 UTF-16 UTF-16LE UTF-16BE UTF-32 UTF-32LE UTF-32BE);
+    if ( first { $_ eq uc $opt_ref->{'out_encoding'} } @encodings ) {
         return unless print { $opt_ref->{'out_fh'} } "\N{BOM}";
     } # END if #
 
