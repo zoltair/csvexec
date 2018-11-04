@@ -45,6 +45,8 @@ If the input is a file or **STDIN**, this script reads the input as CSV, calls h
         The filename or filepath for the output CSV
         (uses STDOUT if omitted or invalid)
 
+### Usage (alternate)
+
 `csvexec -i <path> [options] [<filepath>]`
 
 If the input is a directory, this script recursively searches that directory, calls hook functions in the specified parser (if any), and renders a line of CSV output for each file found.
