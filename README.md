@@ -1,85 +1,89 @@
-This script is used to perform a series of actions reading CSV for input and generating CSV as output.
+## csvexec
 
-This script assumes that the input uses UTF-8 encoding and can accept a byte-order mark, if one is present.
+This script is used to perform an action for each line an input CSV file and generate a line of CSV as output for each result.
 
-The output uses UTF-8 encoding and, when written to a file, includes a byte-order mark.
-Including this byte-order mark allows Microsoft Excel to recognize these as UTF-8 files when opening them.
+This script can accept Unicode input with a byte-order mark, if one is present.
 
-## Usage
+This script uses UTF-8 encoding with a byte-order mark for output. (Including a byte-order mark allows Microsoft Excel to recognize that a CSV file uses Unicode encoding when opening it.)
 
-`csvexec [options] filepath`
+### Usage
 
-If the input is a file, interprets it as CSV and uses the specified parser module to perform an action for each row.
+`csvexec [options] [<filepath>]`
 
-If the input is a directory, recursively searches it and returns a CSV row for each directory or regular file found.
+If the input is a file or **STDIN**, this script reads the input as CSV, calls hook functions in the specified parser (if any), and generates a line of CSV output for each result.
 
 **Options:**
-    `-h, --help`
+
+    -h, --help
         Displays a brief usage statement and exits
 
-    `-c, --check`
+    -c, --check
         Displays the selected options and exits
 
-    `-d, --dry-run`
-        Performs the selected actions without making any changes (such as writing an output file)
+    -d, --dry-run
+        Performs the selected actions without making any changes
+        (such as writing an output file)
 
-    `-v, --verbose`
+    -v, --verbose
         Displays additional information while running
 
-    `-i, --input` *filepath*
-        The filename or filepath for an input CSV file
-        (uses **STDIN** if omitted or invalid)
+    -i, --input <filepath>
+        The filename or filepath for the input CSV
+        (uses STDIN if omitted or invalid)
 
-    `-t, --type` *filetype*
+    -p, --parser <module-name>
+        Specifies the plug-in parser module to use on the input CSV
+        If omitted, uses the default module, which copies the input
+        columns to the output and performs no other action
+
+    -a, --append
+        Includes all columns from the input CSV in the output CSV
+        (This option is useful when using the output from one
+        execution as input for another execution)
+
+    <filepath>
+        The filename or filepath for the output CSV
+        (uses STDOUT if omitted or invalid)
+
+`csvexec -i <path> [options] [<filepath>]`
+
+If the input is a directory, this script recursively searches that directory, calls hook functions in the specified parser (if any), and renders a line of CSV output for each file found.
+
+This version accepts all previous options plus the one(s) listed below.
+
+**Options:**
+
+    -t, --type <filetype>
         Indicates the type of file to include in the output
-        *f*  regular file (*default*)
-        *d*  directory
+        f  regular file (default)
+        d  directory
 
-    `-p, --parser` *module-name*
-        Specifies the parser module to use on the input CSV
-        If omitted, uses the internal parser module, which copies the input columns to the output and performs no other action
+## Plug-in Parser Hook Functions
 
-    `-a, --append`
-        Include all columns from the input CSV in the output CSV
-        This option is particularly useful for piping the results of one execution into another execution
+Each hook function accepts a single parameter, a hash reference which contains all current options and input values.
 
-    `-e, --encode` *encoding*
-        Specifies the encoding to use for filenames when interacting with the filesystem
-            NTFS uses a 16-bit character encoding (UCS-2 or UTF-16)
-            FAT variants use an OEM Codepage (CP-437 or CP-1252 by default) for short names
-                and a 16-bit encoding (UCS-2 or UTF-16) for long names (UTF-16 since Windows 2000)
-            ext4 variants use a NUL-terminated sequence of bytes with no regard for encoding
-                Each process can therefore decide for itself what encoding to use for any filenames
-                Most Unix-like systems expect processes to use the environment's locale
-                Modern Linux systems (such as Ubuntu) typically default to UTF-8 (`utf-8-strict` in perl)
-        If omitted, uses 'utf-8-strict' (strict interpretation of UTF-8)
+<dl>
+<dt><code>parser_print_usage()</code></dt>
+<dd>Display an additional usage statement</dd>
 
-    *filepath*
-        The filename or filepath for an output CSV file
-        (uses **STDOUT** if omitted or invalid)
+<dt><code>parser_get_options()</code></dt>
+<dd>Read any additional command-line options needed</dd>
 
-## Plug-in Hook Functions
+<dt><code>parser_print_options()</code></dt>
+<dd>Display additional command-line options selected</dd>
 
-`parser_print_usage`
-    Display an additional usage statement
+<dt><code>parser_init()</code></dt>
+<dd>Perform any initialization needed</dd>
 
-`parser_get_options`
-    Read any additional command-line options needed
+<dt><code>parser_final()</code></dt>
+<dd>Perform any final cleanup needed</dd>
 
-`parser_print_options`
-    Display additional command-line options selected
+<dt><code>parser_wanted()</code></dt>
+<dd>Process a found file and generate an output data row, if needed</dd>
 
-`parser_init`
-    Perform any initialization needed
+<dt><code>parser_header_row()</code></dt>
+<dd>Process an input header row and generate an output header row</dd>
 
-`parser_final`
-    Perform any final cleanup needed
-
-`parser_wanted`
-    Process a found file and generate an output data row, if needed
-
-`parser_header_row`
-    Process an input header row and generate an output header row
-
-`parser_data_row`
-    Process an input data row and generate an output data row
+<dt><code>parser_data_row()</code></dt>
+<dd>Process an input data row and generate an output data row</dd>
+</dl>
