@@ -21,10 +21,8 @@ use Switch;
 # ==============================================================
 # Global Constants
 # ==============================================================
-const my $DOT_PATH  => q(.);
-const my $COMMA     => q(,);
-const my $AT_SIGN   => q(@);
-const my $EMPTY_STR => q();
+const my $COMMA     => q{,};
+const my $EMPTY_STR => q{};
 
 # ==============================================================
 # Global Options
@@ -271,7 +269,7 @@ sub set_input_options {
 
         # Convert to absolute filepath
         my ( $in_volume, $in_path, $in_filename ) = File::Spec->splitpath($opt_ref->{'input'}, -d $opt_ref->{'input'});
-        $in_path ||= $DOT_PATH;
+        $in_path = File::Spec->curdir() if !defined $in_path;
         $in_path = abs_path($in_path);
         my $in_filepath = File::Spec->catpath($in_volume, $in_path, $in_filename);
 
@@ -320,7 +318,7 @@ sub set_output_options {
 
         # Convert to absolute path
         my ($out_volume, $out_path, $out_filename) = File::Spec->splitpath($opt_ref->{'output'});
-        $out_path = $DOT_PATH unless $out_path;
+        $out_path = File::Spec->curdir() if !defined $out_path;
         $out_path = abs_path($out_path);
 
         # Validate output path
@@ -903,7 +901,7 @@ sub process_find_data_row {
     # Source path
     my $src_base_path = $opt_ref->{'in_path'};
     my $src_path      = File::Spec->abs2rel(abs_path($opt_ref->{'src_path'}), $src_base_path);
-       $src_path      = ($src_path eq $DOT_PATH ? undef : $src_path);
+       $src_path      = ($src_path eq File::Spec->curdir() ? undef : $src_path);
     my $src_fullpath  = ($src_path ? File::Spec->catdir($src_base_path,$src_path) : $src_base_path);
     $opt_ref->{'in_data'}->{'SRC_BASE_PATH'} = $src_base_path;
     $opt_ref->{'in_data'}->{'SRC_PATH'     } = $src_path;
