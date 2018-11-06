@@ -1,4 +1,4 @@
-## csvexec
+# csvexec
 
 This script is used to perform an action for each line an input CSV file and generate a line of CSV as output for each result.
 
@@ -6,7 +6,7 @@ This script can accept Unicode input with a byte-order mark, if one is present.
 
 This script uses UTF-8 encoding with a byte-order mark for output. (Including a byte-order mark allows Microsoft Excel to recognize that a CSV file uses Unicode encoding when opening it.)
 
-### Usage
+## Usage
 
 `csvexec [options] [<filepath>]`
 
@@ -45,7 +45,7 @@ If the input is a file or **STDIN**, this script reads the input as CSV, calls h
         The filename or filepath for the output CSV
         (uses STDOUT if omitted or invalid)
 
-### Usage (alternate)
+## Usage (alternate)
 
 `csvexec -i <path> [options] [<filepath>]`
 
