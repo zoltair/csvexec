@@ -31,65 +31,45 @@ my $no_exists_filepath = File::Spec->catfile($exists_path,$no_exists_filename);
 my @option_tests = (
     # Defaults
     [ [ ],
-      { 'help'   => undef, 'check' => undef, 'dry-run' => undef, 'verbose' => undef,
-        'parser' => undef, 'input' => undef, 'output'  => undef, 'type'    => 'f' },
-      '(defaults)' ],
-    # --help
-    [ [ '--help' ],    { 'help' => 1 },     'help option' ],
-    [ [ '-h' ],        { 'help' => 1 },     'h option' ],
-    # --check
-    [ [ '--check' ],   { 'check' => 1 } ,   'check option' ],
-    [ [ '-c' ],        { 'check' => 1 } ,   'c option' ],
-    # --dry-run
-    [ [ '--dry-run' ], { 'dry-run' => 1 } , 'dry-run option' ],
-    [ [ '-d' ],        { 'dry-run' => 1 } , 'd option' ],
-    # --verbose
-    [ [ '--verbose' ], { 'verbose' => 1 } , 'verbose option' ],
-    [ [ '-v' ],        { 'verbose' => 1 } , 'v option' ],
+      { 'help'    => undef,
+        'check'   => undef, 'dry-run' => undef, 'verbose' => undef,
+        'append'  => undef, 'parser'  => undef, 'type'    => 'f',
+        'input'   => undef, 'output'  => undef  },
+      '(default options)' ],
+    # Help options
+    [ [ '--help'    ], { 'help'    => 1 },    '--help option' ],
+    # Troubleshooting options
+    [ [ '--check'   ], { 'check'   => 1 },   '--check option' ],
+    [ [ '--dry-run' ], { 'dry-run' => 1 }, '--dry-run option' ],
+    [ [ '--verbose' ], { 'verbose' => 1 }, '--verbose option' ],
     # --append
-    [ [ '--append' ],  { 'append' => 1 } ,  'append option' ],
-    [ [ '-a' ],        { 'append' => 1 } ,  'a option' ],
+    [ [ '--append'  ], { 'append'  => 1 },  '--append option' ],
+    [ [ '-a'        ], { 'append'  => 1 },        '-a option' ],
     # --parser
-    [ [ '--parser', 'MoveFiles' ] ,
-      { 'help'   => undef,       'check' => undef, 'dry-run' => undef, 'verbose' => undef,
-        'parser' => 'MoveFiles', 'input' => undef , 'output' => undef, 'type'    => 'f' } ,
-      'parser option' ],
-    [ [ '-p', 'MoveFiles' ] ,
-      { 'help'   => undef,       'check' => undef, 'dry-run' => undef, 'verbose' => undef,
-        'parser' => 'MoveFiles', 'input' => undef , 'output' => undef, 'type'    => 'f' } ,
-      'p option' ],
-    # --input
-    [ [ '--input', 'input.csv' ] ,
-      { 'help'   => undef, 'check' => undef,      'dry-run' => undef, 'verbose' => undef,
-        'parser' => undef, 'input' => 'input.csv', 'output' => undef, 'type'    => 'f' } ,
-      'input option' ],
-    [ [ '-i', 'input.csv' ] ,
-      { 'help'   => undef, 'check' => undef,      'dry-run' => undef, 'verbose' => undef,
-        'parser' => undef, 'input' => 'input.csv', 'output' => undef, 'type'    => 'f' } ,
-      'i option' ],
-    # output
-    #   'output' is not set by get_options();
-    #   it is set in main() after the 'parser_get_options' hook function has been called
-    [ [ 'output.csv' ] ,
-      { 'help'   => undef, 'check' => undef, 'dry-run' => undef, 'verbose' => undef,
-        'parser' => undef, 'input' => undef,  'output' => undef, 'type'    => 'f' },
-      'output option' ],
+    [ [ '--parser', 'MoveFiles' ], { 'parser' => 'MoveFiles' }, '--parser option' ],
+    [ [ '-p',       'MoveFiles' ], { 'parser' => 'MoveFiles' } ,      '-p option' ],
     # --type
-    [ [ '--type', 'f' ],     { 'type' => 'f' } , 'type option (file)' ],
-    [ [ '--type', 'd' ],     { 'type' => 'd' } , 'type option (directory)' ],
-    [ [ '--type', 'l' ],     { 'type' => 'l' } , 'type option (symbolic link)' ],
-    [ [ '--type', 'b' ],     { 'type' => 'b' } , 'type option (block special file)' ],
-    [ [ '--type', 'c' ],     { 'type' => 'c' } , 'type option (character special file)' ],
-    [ [ '-t', 'f' ],         { 'type' => 'f' } , 't option (file)' ],
-    [ [ '-t', 'd' ],         { 'type' => 'd' } , 't option (directory)' ],
-    [ [ '-t', 'l' ],         { 'type' => 'l' } , 't option (symbolic link)' ],
-    [ [ '-t', 'b' ],         { 'type' => 'b' } , 't option (block special file)' ],
-    [ [ '-t', 'c' ],         { 'type' => 'c' } , 't option (character special file)' ],
-    [ [ '--type', 'file' ],  { 'type' => 'f' } , 'type option (\'file\')' ],
-    [ [ '--type', 'dir' ],   { 'type' => 'd' } , 'type option (\'dir\')' ],
-    [ [ '--type', 'link' ],  { 'type' => 'l' } , 'type option (\'link\')' ],
-    [ [ '--type', 'block' ], { 'type' => 'b' } , 'type option (\'block\')' ],
-    [ [ '--type', 'char' ],  { 'type' => 'c' } , 'type option (\'char\')' ],
+    [ [ '--type', 'f'     ], { 'type' => 'f' } , '--type option (file)' ],
+    [ [ '--type', 'd'     ], { 'type' => 'd' } , '--type option (directory)' ],
+    [ [ '--type', 'l'     ], { 'type' => 'l' } , '--type option (symbolic link)' ],
+    [ [ '--type', 'b'     ], { 'type' => 'b' } , '--type option (block special file)' ],
+    [ [ '--type', 'c'     ], { 'type' => 'c' } , '--type option (character special file)' ],
+    [ [ '-t',     'f'     ], { 'type' => 'f' } ,     '-t option (file)' ],
+    [ [ '-t',     'd'     ], { 'type' => 'd' } ,     '-t option (directory)' ],
+    [ [ '-t',     'l'     ], { 'type' => 'l' } ,     '-t option (symbolic link)' ],
+    [ [ '-t',     'b'     ], { 'type' => 'b' } ,     '-t option (block special file)' ],
+    [ [ '-t',     'c'     ], { 'type' => 'c' } ,     '-t option (character special file)' ],
+    [ [ '--type', 'file'  ], { 'type' => 'f' } , '--type option (\'file\')' ],
+    [ [ '--type', 'dir'   ], { 'type' => 'd' } , '--type option (\'dir\')' ],
+    [ [ '--type', 'link'  ], { 'type' => 'l' } , '--type option (\'link\')' ],
+    [ [ '--type', 'block' ], { 'type' => 'b' } , '--type option (\'block\')' ],
+    [ [ '--type', 'char'  ], { 'type' => 'c' } , '--type option (\'char\')' ],
+    # --input
+    [ [ '--input', 'input.csv' ], { 'input' => 'input.csv' }, '--input option' ],
+    [ [ '-i',      'input.csv' ], { 'input' => 'input.csv' },      '-i option' ],
+    # --output
+    [ [ '--output', 'output.csv' ], { 'output' => 'output.csv' }, '--output option' ],
+    [ [ '-o',       'output.csv' ], { 'output' => 'output.csv' },       '-o option' ],
 ); # END @option_tests #
 
 my @input_tests = (

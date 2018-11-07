@@ -19,8 +19,8 @@ my $test_out_filepath = File::Spec->catfile($test_path,$test_out_filename);
 my @funcs = qw(
     acquire_in_csv    release_in_csv
     acquire_out_csv   release_out_csv
-    open_stdin        close_stdin
-    open_stdout       close_stdout
+    acquire_stdin     release_stdin
+    acquire_stdout    release_stdout
     open_input_file   close_input_file
     open_output_file  close_output_file
 ); # END @funcs #
@@ -50,13 +50,13 @@ ok(main::release_out_csv($opt_ref),'Release output CSV object');
 ok(!defined $opt_ref->{'out_csv'},'Output CSV object is not defined');
 
 # Open/Close STDIN/STDOUT
-ok(main::open_stdin($opt_ref),'Open STDIN');
+ok(main::acquire_stdin($opt_ref),'Open STDIN');
 ok(defined $opt_ref->{'in_fh'},'STDIN file handle is defined');
-ok(main::close_stdin($opt_ref),'Close STDIN');
+ok(main::release_stdin($opt_ref),'Close STDIN');
 ok(!defined $opt_ref->{'in_fh'},'STDIN file handle is not defined');
-ok(main::open_stdout($opt_ref),'Open STDOUT');
+ok(main::acquire_stdout($opt_ref),'Open STDOUT');
 ok(defined $opt_ref->{'out_fh'},'STDOUT file handle is defined');
-ok(main::close_stdout($opt_ref),'Close STDOUT');
+ok(main::release_stdout($opt_ref),'Close STDOUT');
 ok(!defined $opt_ref->{'out_fh'},'STDOUT file handle is not defined');
 
 # Open/Close files
