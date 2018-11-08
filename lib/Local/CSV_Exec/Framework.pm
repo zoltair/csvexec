@@ -116,7 +116,7 @@ sub get_base_options {
         'dry-run',
         'input|i=s',
         'output|o=s',
-    );
+    ) or return;
 
     return 1;
 } # END get_base_options() #
@@ -200,7 +200,7 @@ sub open_input_file {
     # Initialize input file handle
     $logger->debug(sprintf 'Opening input file: %s', $opt_ref->{'in_filepath'});
     unless ( open $opt_ref->{'in_fh'}, '<', $opt_ref->{'in_filepath'} ) {
-        $logger->error(sprintf 'Unable to open input file (%s): %s', $opt_ref->{'in_filepath'},$ERRNO);
+        $logger->error(sprintf 'Unable to open input file (%s): %s', $opt_ref->{'in_filepath'},$OS_ERROR);
         return;
     } # END unless #
 
@@ -220,7 +220,7 @@ sub close_input_file {
     # Close input file handle
     $logger->debug('Closing input file');
     unless ( close $opt_ref->{'in_fh'} ) {
-        $logger->error(sprintf 'Unable to close input file: %s',$ERRNO);
+        $logger->error(sprintf 'Unable to close input file: %s',$OS_ERROR);
     } # END unless #
     $opt_ref->{'in_fh'} = undef;
 
@@ -275,7 +275,7 @@ sub open_output_file {
 
     $logger->debug(sprintf 'Opening ouput file: %s', $opt_ref->{'out_filepath'});
     unless ( open $opt_ref->{'out_fh'}, '>', $opt_ref->{'out_filepath'} ) {
-        $logger->error(sprintf 'Unable to open output file %s: %s',$opt_ref->{'out_filepath'},$ERRNO);
+        $logger->error(sprintf 'Unable to open output file %s: %s',$opt_ref->{'out_filepath'},$OS_ERROR);
         return;
     } # END unless #
 
@@ -294,7 +294,7 @@ sub close_output_file {
 
     $logger->debug('Closing ouput file');
     unless ( close $opt_ref->{'out_fh'} ) {
-        $logger->error(sprintf '%s: %s',$opt_ref->{'out_filepath'},$ERRNO);
+        $logger->error(sprintf '%s: %s',$opt_ref->{'out_filepath'},$OS_ERROR);
     } # END unless #
     $opt_ref->{'out_fh'} = undef;
 
