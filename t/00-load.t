@@ -15,7 +15,7 @@ my @funcs = qw(
 ); # END @funcs #
 
 # Test counts
-const my $LOAD_TEST_COUNT => 2;
+const my $LOAD_TEST_COUNT => 3;
 const my $BASE_TEST_COUNT => 3;
 const my $FUNC_TEST_COUNT => scalar @funcs;
 
@@ -27,6 +27,7 @@ plan tests => $count;
 
 # Load tests
 use_ok('Local::CSV_Exec::Framework');
+use_ok('Local::CSV_Exec::IO');
 require_ok('./script/csvexec');
 
 # Base tests
