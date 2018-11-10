@@ -13,7 +13,7 @@ use File::Find;
 use File::Path qw(make_path);
 use Cwd qw( abs_path );
 use List::Util qw( first );
-use Local::CSV_Exec::Framework qw( :all );
+use Taint::Util;
 use Local::CSV_Exec::IO qw( :all );
 
 # ==============================================================
@@ -129,6 +129,10 @@ sub run {
     return 1;
 } # END run #
 
+# ==============================================================
+# Help and Usage Functions
+# ==============================================================
+
 # --------------------------------------------------------------
 # print_usage()
 #    Prints the usage statement
@@ -201,8 +205,32 @@ END_OPTIONS
 } # END print_options #
 
 # ==============================================================
-# Options
+# Command-Line Option Functions
 # ==============================================================
+
+# --------------------------------------------------------------
+# get_base_options()
+#   Reads command-line options and loads parser
+#   Prints usage statement and exits, if needed (--help)
+#   Prints selected options and exits, if needed (--check)
+# --------------------------------------------------------------
+sub get_base_options {
+    my ($opt_ref) = @_;
+    return if ! defined $opt_ref;
+    return if ! defined $opt_ref->{'args'};
+
+    # Command-line parameters
+    GetOptionsFromArray($opt_ref->{'args'}, $opt_ref,
+        'help',
+        'check',
+        'verbose',
+        'dry-run',
+        'input|i=s',
+        'output|o=s',
+    ) or return;
+
+    return 1;
+} # END get_base_options() #
 
 # --------------------------------------------------------------
 # get_options()
@@ -231,6 +259,55 @@ sub get_options {
 
     return 1;
 } # END get_options() #
+
+# ==============================================================
+# Valildation and Initialization Functions
+# ==============================================================
+
+# --------------------------------------------------------------
+# init_logger()
+#   Initialize error logging
+# --------------------------------------------------------------
+sub init_logger {
+    my ($opt_ref, $logname) = @_;
+    return if ! defined $opt_ref;
+    return unless $logname;
+
+    $opt_ref->{'logname'} = $logname;
+    Log::Log4perl->easy_init({
+        'level'    => $ERROR,
+        'file'     => 'STDERR',
+        'utf8'     => 1,
+        'category' => $opt_ref->{'logname'},
+        'layout'   => '%d{yyyy-MM-dd HH:mm:ss} (%F{1}) %p: %m%n',
+    });
+
+    return 1;
+} # END init_logger #
+
+# --------------------------------------------------------------
+# split_filepath()
+#   Converts the given filepath to an absolut path and splits
+#   it apart to return:
+#     ( volume, path, filename, fullpath )
+# --------------------------------------------------------------
+sub split_filepath {
+    my ($filepath) = @_;
+    return unless $filepath;
+
+    # Split filepath
+    my ( $volume, $path, $filename ) = File::Spec->splitpath($filepath);
+
+    # Convert to absolute filepath
+    $path = File::Spec->curdir() if ! $path;
+    $path = abs_path($path);
+
+    # Recombine filepath
+    $filepath = File::Spec->catpath($volume, $path, $filename);
+
+    return ($volume, $path, $filename, $filepath);
+
+} # END split_filepath #
 
 # --------------------------------------------------------------
 # set_input_options()
@@ -330,6 +407,52 @@ sub set_output_options {
 
     return 1;
 } # END set_output_options #
+
+# --------------------------------------------------------------
+# validate_filepath()
+#   Returns true (1) if given filepath contains only valid characters
+# --------------------------------------------------------------
+sub validate_filepath {
+    my ($filepath) = @_;
+    if ( ! $filepath =~ m{\A [^\p{Other}]+ \z}xms ) {
+        return;
+    } # END if #
+    return 1;
+} # END validate_filepath #
+
+# --------------------------------------------------------------
+# validate_output_filepath()
+#   Parses $opt_ref->{input} to return
+#     $opt_ref->{in_volume  }
+#     $opt_ref->{in_path    }
+#     $opt_ref->{in_filename}
+#     $opt_ref->{in_filepath}
+#   Assuming {input} is set and refers to an existing file or directory
+#   Returns true (1) on success, false (undef) on failure
+# --------------------------------------------------------------
+sub validate_output_filepath {
+    my ($opt_ref) = @_;
+    return if ! defined $opt_ref;
+    return if ! defined $opt_ref->{'out_filepath'};
+    my $logger = get_logger($opt_ref->{'logname'});
+
+    # Validate filepath
+    if ( validate_filepath($opt_ref->{'out_filepath'}) ) {
+        untaint $opt_ref->{'out_volume'} ;
+        untaint $opt_ref->{'out_path'};
+        untaint $opt_ref->{'out_filename'};
+        untaint $opt_ref->{'out_filepath'};
+    } else {
+        $logger->error('Output filepath contains invalid characters');
+        $opt_ref->{'out_volume'}   = undef;
+        $opt_ref->{'out_path'}     = undef;
+        $opt_ref->{'out_filename'} = undef;
+        $opt_ref->{'out_filepath'} = undef;
+        return;
+    } # END if #
+
+    return 1;
+} # END validate_output_filepath #
 
 # ==============================================================
 # Parser Handling
